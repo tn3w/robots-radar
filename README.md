@@ -19,11 +19,9 @@ Flags: `--top-thousands` (default 10), `--max-workers` (128), `--timeout` (3s).
 ## How
 
 1. Download Tranco top-1M, take first N×1000.
-2. Resolve DNS in parallel across 27 public resolvers (Cloudflare, Google, Quad9, …) → cache.
-3. Patch `socket.getaddrinfo` → httpx fetches use cached IPs, original SNI preserved.
-4. Fetch `https://{domain}/robots.txt` (one retry on failure).
-5. Parse groups, classify each UA as blocked/allowed/mixed, aggregate.
-6. Merge time series with prior local file or latest GitHub release.
+2. Fetch `https://{domain}/robots.txt` in parallel (one retry on failure).
+3. Parse groups, classify each UA as blocked/allowed/mixed, aggregate.
+4. Merge time series with prior local file or latest GitHub release.
 
 ## Releases
 

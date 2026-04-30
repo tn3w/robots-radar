@@ -6,18 +6,13 @@ from __future__ import annotations
 import argparse
 import concurrent.futures as cf
 import io
-import itertools
 import json
 import os
 import re
-import socket
 import sys
-import threading
 import time
 import zipfile
 
-import dns.exception
-import dns.resolver
 import httpx
 
 TRANCO_URL = "https://tranco-list.eu/top-1m.csv.zip"
@@ -30,27 +25,9 @@ DEFAULT_TIMEOUT = 3
 DEFAULT_WORKERS = 128
 DEFAULT_TOP_K = 10
 
-DNS_SERVERS = [
-    "1.1.1.1", "1.0.0.1", "8.8.8.8", "8.8.4.4",
-    "9.9.9.9", "149.112.112.112", "208.67.222.222", "208.67.220.220",
-    "94.140.14.14", "94.140.15.15", "76.76.2.2", "76.76.10.10",
-    "64.6.64.6", "64.6.65.6", "84.200.69.80", "84.200.70.40",
-    "8.26.56.26", "8.20.247.20", "185.228.168.9", "185.228.169.9",
-    "77.88.8.8", "77.88.8.1", "156.154.70.5", "156.154.71.5",
-    "74.82.42.42", "45.90.28.0", "45.90.30.0",
-]
-DNS_TIMEOUT = 3.0
-DNS_LIFETIME = 5.0
-
 SKIP_STATUS = {401, 403, 404, 410}
 DIRECTIVE_RE = re.compile(r"(?i)(user-agent|allow|disallow)\s*:")
 WHITESPACE_RE = re.compile(r"\s+")
-
-_dns_cache: dict[str, str] = {}
-_dns_lock = threading.Lock()
-_resolver_cycle = itertools.cycle(DNS_SERVERS)
-_resolver_lock = threading.Lock()
-_orig_getaddrinfo = socket.getaddrinfo
 
 _client: httpx.Client | None = None
 
@@ -70,46 +47,6 @@ def client() -> httpx.Client:
     return _client
 
 
-def next_server() -> str:
-    with _resolver_lock:
-        return next(_resolver_cycle)
-
-
-def resolve(domain: str) -> str | None:
-    tried: set[str] = set()
-    for _ in range(min(len(DNS_SERVERS), 4)):
-        server = next_server()
-        guard = 0
-        while server in tried and guard < len(DNS_SERVERS):
-            server = next_server()
-            guard += 1
-        tried.add(server)
-        r = dns.resolver.Resolver(configure=False)
-        r.nameservers = [server]
-        r.timeout = DNS_TIMEOUT
-        r.lifetime = DNS_LIFETIME
-        try:
-            for record in r.resolve(domain, "A"):
-                return record.address
-        except dns.resolver.NXDOMAIN:
-            return None
-        except (dns.exception.DNSException, OSError):
-            continue
-    return None
-
-
-def patched_getaddrinfo(host, port, *args, **kwargs):
-    if not isinstance(host, str):
-        return _orig_getaddrinfo(host, port, *args, **kwargs)
-    candidates = [host, host[4:] if host.startswith("www.") else f"www.{host}"]
-    with _dns_lock:
-        for candidate in candidates:
-            ip = _dns_cache.get(candidate)
-            if ip:
-                return _orig_getaddrinfo(ip, port, *args, **kwargs)
-    return _orig_getaddrinfo(host, port, *args, **kwargs)
-
-
 def download_top_domains(limit: int) -> list[str]:
     log(f"Downloading Tranco top-1M, taking first {limit:,}...")
     payload = client().get(TRANCO_URL, timeout=DEFAULT_TIMEOUT)
@@ -126,23 +63,6 @@ def download_top_domains(limit: int) -> list[str]:
                     break
     log(f"Loaded {len(domains):,} domains.")
     return domains
-
-
-def prefetch_dns(domains: list[str], workers: int) -> None:
-    total = len(domains)
-    log(f"Resolving DNS for {total:,} domains across {len(DNS_SERVERS)} servers...")
-    resolved = failed = done = 0
-    with cf.ThreadPoolExecutor(max_workers=workers) as ex:
-        for domain, ip in ex.map(lambda d: (d, resolve(d)), domains):
-            done += 1
-            if ip:
-                with _dns_lock:
-                    _dns_cache[domain] = ip
-                resolved += 1
-            else:
-                failed += 1
-            if done % 500 == 0 or done == total:
-                log(f"DNS: {done:,}/{total:,} ok={resolved:,} fail={failed:,}")
 
 
 def fetch_robots(domain: str, timeout: int) -> str | None:
@@ -386,9 +306,6 @@ def main() -> int:
     args = parse_args()
     limit = max(1, args.top_thousands) * 1000
     domains = download_top_domains(limit)
-
-    prefetch_dns(domains, args.max_workers)
-    socket.getaddrinfo = patched_getaddrinfo
 
     mapping, blocked_counts, analyzed = build_mapping(domains, args.max_workers, args.timeout)
     log(f"Writing {args.domain_output}...")

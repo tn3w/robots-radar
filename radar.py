@@ -76,13 +76,6 @@ def fetch_robots(domain: str, timeout: int) -> str | None:
         return None
 
 
-def fetch_with_retry(domain: str, timeout: int) -> tuple[str | None, bool]:
-    text = fetch_robots(domain, timeout)
-    if text is not None:
-        return text, False
-    return fetch_robots(domain, timeout), True
-
-
 def split_directives(line: str) -> list[tuple[str, str]]:
     matches = list(DIRECTIVE_RE.finditer(line))
     if not matches:
@@ -176,8 +169,7 @@ def build_mapping(
     mapping: dict[str, dict[str, list[str]]] = {}
     blocked_counts: dict[str, int] = {}
     stats = {
-        "fetch_failed": 0, "retried": 0, "recovered": 0,
-        "empty": 0, "no_directives": 0, "orphan_rules": 0,
+        "fetch_failed": 0, "empty": 0, "no_directives": 0, "orphan_rules": 0,
         "ua_without_rules": 0, "no_usable": 0, "analyzed": 0,
     }
     total = len(domains)
@@ -185,15 +177,11 @@ def build_mapping(
     log(f"Fetching robots.txt for {total:,} domains, {workers} workers...")
 
     with cf.ThreadPoolExecutor(max_workers=workers) as ex:
-        futures = {ex.submit(fetch_with_retry, d, timeout): d for d in domains}
+        futures = {ex.submit(fetch_robots, d, timeout): d for d in domains}
         for fut in cf.as_completed(futures):
             domain = futures[fut]
-            text, retried = fut.result()
+            text = fut.result()
             done += 1
-            if retried:
-                stats["retried"] += 1
-                if text is not None:
-                    stats["recovered"] += 1
             if done % 100 == 0 or done == total:
                 log(f"Robots: {done:,}/{total:,} {stats} saved={len(mapping):,}")
             if text is None:

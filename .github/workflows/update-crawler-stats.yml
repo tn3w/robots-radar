@@ -1,0 +1,64 @@
+name: Update Crawler Stats
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: update-crawler-stats
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - run: pip install httpx dnspython
+
+      - name: Build crawler stats
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python radar.py
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TS=$(date -u +"%Y-%m-%d %H:%M UTC")
+          TAG="v$(date -u +%Y%m%d-%H%M%S)"
+          gh release create "$TAG" \
+            domain-crawler-blocks.json \
+            crawler-block-percentages.json \
+            --title "Crawler Stats - $TS" \
+            --notes "Automated update.
+
+          - \`domain-crawler-blocks.json\`: per-domain crawler allow/block map
+          - \`crawler-block-percentages.json\`: block-rate time series
+
+          \`\`\`bash
+          wget https://github.com/tn3w/robots-radar/releases/download/$TAG/domain-crawler-blocks.json
+          wget https://github.com/tn3w/robots-radar/releases/download/$TAG/crawler-block-percentages.json
+          \`\`\`"
+
+      - name: Prune old releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          KEEP=3
+          gh release list --limit 100 --json tagName,isLatest \
+            --jq '.[] | select(.isLatest | not) | .tagName' \
+            | tail -n +$((KEEP + 1)) \
+            | while read -r tag; do
+                echo "Deleting $tag"
+                gh release delete "$tag" --yes --cleanup-tag
+              done

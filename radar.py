@@ -29,7 +29,7 @@ USER_AGENT = "robots-radar/1.0 (+https://github.com/tn3w/robots-radar)"
 
 DEFAULT_TIMEOUT = 3
 DEFAULT_WORKERS = 512
-DEFAULT_TOP_K = 100
+DEFAULT_TOP_K = 25
 TRANCO_TIMEOUT = 60
 MAX_ROBOTS_BYTES = 512 * 1024
 DIRECTIVE_RE = re.compile(r"(?i)(user-agent|allow|disallow|crawl-delay|sitemap)\s*:")

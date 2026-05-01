@@ -9,7 +9,7 @@ pip install -r requirements.txt
 python radar.py
 ```
 
-Flags: `--top-thousands` (default 100), `--max-workers` (512), `--timeout` (3s).
+Flags: `--top-thousands` (default 25), `--max-workers` (512), `--timeout` (3s).
 
 ## Output
 

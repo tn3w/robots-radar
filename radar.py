@@ -23,7 +23,7 @@ USER_AGENT = "robots-radar/1.0 (+https://github.com/tn3w/robots-radar)"
 
 DEFAULT_TIMEOUT = 3
 DEFAULT_WORKERS = 128
-DEFAULT_TOP_K = 100
+DEFAULT_TOP_K = 20
 
 SKIP_STATUS = {401, 403, 404, 410}
 DIRECTIVE_RE = re.compile(r"(?i)(user-agent|allow|disallow)\s*:")

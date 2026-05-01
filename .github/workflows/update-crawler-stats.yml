@@ -23,7 +23,7 @@ jobs:
           python-version: '3.12'
           cache: pip
 
-      - run: pip install httpx
+      - run: pip install "httpx[http2]"
 
       - name: Build crawler stats
         env:

@@ -25,8 +25,7 @@ USER_AGENT = "robots-radar/1.0 (+https://github.com/tn3w/robots-radar)"
 DEFAULT_TIMEOUT = 3
 DEFAULT_WORKERS = 512
 DEFAULT_TOP_K = 100
-
-SKIP_STATUS = {401, 403, 404, 410}
+TRANCO_TIMEOUT = 60
 DIRECTIVE_RE = re.compile(r"(?i)(user-agent|allow|disallow|crawl-delay|sitemap)\s*:")
 WHITESPACE_RE = re.compile(r"\s+")
 
@@ -41,16 +40,17 @@ def client() -> httpx.Client:
     global _client
     if _client is None:
         _client = httpx.Client(
-            follow_redirects=True,
-            limits=httpx.Limits(max_connections=512, max_keepalive_connections=256),
-            headers={"User-Agent": USER_AGENT},
+            http2=True,
+            follow_redirects=False,
+            limits=httpx.Limits(max_connections=1024, max_keepalive_connections=512),
+            headers={"User-Agent": USER_AGENT, "Accept-Encoding": "gzip, br"},
         )
     return _client
 
 
 def download_top_domains(limit: int) -> list[str]:
     log(f"Downloading Tranco top-1M, taking first {limit:,}...")
-    payload = client().get(TRANCO_URL, timeout=DEFAULT_TIMEOUT)
+    payload = client().get(TRANCO_URL, timeout=TRANCO_TIMEOUT, follow_redirects=True)
     payload.raise_for_status()
     domains: list[str] = []
     with zipfile.ZipFile(io.BytesIO(payload.content)) as zf:
@@ -69,9 +69,8 @@ def download_top_domains(limit: int) -> list[str]:
 def fetch_robots(domain: str, timeout: int) -> str | None:
     try:
         response = client().get(f"https://{domain}/robots.txt", timeout=timeout)
-        if response.status_code in SKIP_STATUS:
+        if response.status_code != 200:
             return ""
-        response.raise_for_status()
         return response.text
     except (httpx.HTTPError, OSError):
         return None
@@ -365,7 +364,9 @@ def fetch_release_asset(name: str) -> bytes | None:
     if token:
         headers["Authorization"] = f"Bearer {token}"
     try:
-        release = client().get(RELEASE_API, headers=headers).json()
+        release = client().get(
+            RELEASE_API, headers=headers, follow_redirects=True
+        ).json()
     except (httpx.HTTPError, json.JSONDecodeError, OSError):
         return None
     for asset in release.get("assets", []):
@@ -375,7 +376,7 @@ def fetch_release_asset(name: str) -> bytes | None:
         if not url:
             return None
         try:
-            return client().get(url, headers=headers).content
+            return client().get(url, headers=headers, follow_redirects=True).content
         except (httpx.HTTPError, OSError):
             return None
     return None

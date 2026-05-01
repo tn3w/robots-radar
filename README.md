@@ -9,46 +9,74 @@ pip install -r requirements.txt
 python radar.py
 ```
 
-Flags: `--top-thousands` (default 20), `--max-workers` (256), `--timeout` (3s).
+Flags: `--top-thousands` (default 100), `--max-workers` (512), `--timeout` (3s).
 
 ## Output
 
 All files are **minified JSON**.
 
 ### `domain-crawler-blocks.json`
+
 Per-domain crawler map:
+
 ```json
-{"example.com":{"blocked":["GPTBot"],"allowed":["Googlebot"]}}
+{ "example.com": { "blocked": ["GPTBot"], "allowed": ["Googlebot"] } }
 ```
 
 ### `crawler-stats.json`
-Aggregated per-crawler stats across all analyzed domains:
+
+Top-level metadata plus per-crawler aggregates:
+
 ```json
 {
-  "GPTBot": {
-    "block_rate": 0.312,
-    "blocked": 3120,
-    "allowed": 450,
-    "mixed": 30,
+  "meta": {
+    "total": 20000,
+    "analyzed": 5320,
+    "fetch_failed": 3567,
+    "empty": 1960,
+    "no_directives": 757,
+    "orphan_rules": 6,
+    "ua_without_rules": 131,
+    "no_usable": 1658,
+    "sitemap": 6200,
     "wildcard_blocked": 1200,
-    "wildcard_allowed": 800,
-    "avg_crawl_delay": 5.0
+    "wildcard_allowed": 800
+  },
+  "crawlers": {
+    "GPTBot": {
+      "block_rate": 0.312,
+      "blocked": 3120,
+      "allowed": 450,
+      "mixed": 30,
+      "avg_crawl_delay": 5.0
+    }
   }
 }
 ```
 
-Fields:
+`meta` fields:
+| Field | Description |
+|---|---|
+| `total` | domains attempted |
+| `analyzed` | domains with parseable, usable robots.txt |
+| `fetch_failed` | network errors |
+| `empty` / `no_directives` / `orphan_rules` / `ua_without_rules` / `no_usable` | parse skip reasons |
+| `sitemap` | domains that advertise a `Sitemap:` URL |
+| `wildcard_blocked` / `wildcard_allowed` | domains where `*` is blocked/allowed (global, not per-crawler) |
+
+Per-crawler fields:
 | Field | Description |
 |---|---|
 | `block_rate` | fraction of analyzed domains that explicitly block this crawler |
 | `blocked` / `allowed` / `mixed` | raw domain counts |
-| `wildcard_blocked` / `wildcard_allowed` | domains where `*` also blocks/allows (context for inherited rules) |
 | `avg_crawl_delay` | mean `Crawl-delay` across domains that set it for this crawler |
 
 ### `crawler-block-percentages.json`
+
 Block-rate time series for trend tracking:
+
 ```json
-{"GPTBot":{"1746000000":0.312}}
+{ "GPTBot": { "1746000000": 0.312 } }
 ```
 
 ## How

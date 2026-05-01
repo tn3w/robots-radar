@@ -23,7 +23,7 @@ CRAWLERS_FILE = "crawler-stats.json"
 USER_AGENT = "robots-radar/1.0 (+https://github.com/tn3w/robots-radar)"
 
 DEFAULT_TIMEOUT = 3
-DEFAULT_WORKERS = 256
+DEFAULT_WORKERS = 512
 DEFAULT_TOP_K = 20
 
 SKIP_STATUS = {401, 403, 404, 410}
@@ -84,7 +84,7 @@ def split_directives(line: str) -> list[tuple[str, str]]:
     out: list[tuple[str, str]] = []
     for i, match in enumerate(matches):
         end = matches[i + 1].start() if i + 1 < len(matches) else len(line)
-        out.append((match.group(1).lower(), line[match.end():end].strip()))
+        out.append((match.group(1).lower(), line[match.end() : end].strip()))
     return out
 
 
@@ -183,8 +183,10 @@ def parse_robots(text: str) -> RobotsResult:
             if not cleaned:
                 continue
             existing = result.get(cleaned)
-            result[cleaned] = state if existing is None else (
-                existing if existing == state else "mixed"
+            result[cleaned] = (
+                state
+                if existing is None
+                else (existing if existing == state else "mixed")
             )
 
     wildcard_state = result.get("*")
@@ -211,11 +213,8 @@ class Accumulator:
         self.blocked: int = 0
         self.allowed: int = 0
         self.mixed: int = 0
-        self.wildcard_blocked: int = 0
-        self.wildcard_allowed: int = 0
         self.crawl_delay_total: float = 0.0
         self.crawl_delay_count: int = 0
-        self.has_sitemap: int = 0
 
     def add_state(self, state: str) -> None:
         if state == "blocked":
@@ -225,29 +224,31 @@ class Accumulator:
         elif state == "mixed":
             self.mixed += 1
 
-    def add_wildcard(self, state: str | None) -> None:
-        if state == "blocked":
-            self.wildcard_blocked += 1
-        elif state == "allowed":
-            self.wildcard_allowed += 1
-
     def add_crawl_delay(self, delay: float) -> None:
         self.crawl_delay_total += delay
         self.crawl_delay_count += 1
 
-    def add_sitemap(self) -> None:
-        self.has_sitemap += 1
-
 
 def build_mapping(
     domains: list[str], workers: int, timeout: int
-) -> tuple[dict[str, dict[str, list[str]]], dict[str, Accumulator], int, int]:
+) -> tuple[
+    dict[str, dict[str, list[str]]], dict[str, Accumulator], int, dict[str, int]
+]:
     mapping: dict[str, dict[str, list[str]]] = {}
     crawler_acc: dict[str, Accumulator] = {}
-    global_sitemap_count = 0
+    global_counts: dict[str, int] = {
+        "sitemap": 0,
+        "wildcard_blocked": 0,
+        "wildcard_allowed": 0,
+    }
     stats = {
-        "fetch_failed": 0, "empty": 0, "no_directives": 0, "orphan_rules": 0,
-        "ua_without_rules": 0, "no_usable": 0, "analyzed": 0,
+        "fetch_failed": 0,
+        "empty": 0,
+        "no_directives": 0,
+        "orphan_rules": 0,
+        "ua_without_rules": 0,
+        "no_usable": 0,
+        "analyzed": 0,
     }
     total = len(domains)
     done = 0
@@ -273,14 +274,14 @@ def build_mapping(
             stats["analyzed"] += 1
 
             if result.sitemaps:
-                global_sitemap_count += 1
+                global_counts["sitemap"] += 1
+            if result.wildcard_state == "blocked":
+                global_counts["wildcard_blocked"] += 1
+            elif result.wildcard_state == "allowed":
+                global_counts["wildcard_allowed"] += 1
 
             for pattern, state in result.states.items():
-                acc = crawler_acc.setdefault(pattern, Accumulator())
-                acc.add_state(state)
-                acc.add_wildcard(result.wildcard_state)
-                if result.sitemaps:
-                    acc.add_sitemap()
+                crawler_acc.setdefault(pattern, Accumulator()).add_state(state)
 
             for agent, delay in result.crawl_delays.items():
                 crawler_acc.setdefault(agent, Accumulator()).add_crawl_delay(delay)
@@ -293,39 +294,38 @@ def build_mapping(
                 mapping[domain] = {"blocked": blocked, "allowed": allowed}
 
     log(f"Done robots: {stats} saved_domains={len(mapping):,}")
+    global_counts.update(stats)
+    global_counts["total"] = total
     return (
         dict(sorted(mapping.items())),
         crawler_acc,
         stats["analyzed"],
-        global_sitemap_count,
+        global_counts,
     )
 
 
 def build_crawler_stats(
-    acc: dict[str, Accumulator], analyzed: int
-) -> dict[str, dict]:
+    acc: dict[str, Accumulator], analyzed: int, global_counts: dict[str, int]
+) -> dict:
     if analyzed == 0:
         return {}
-    out: dict[str, dict] = {}
+    crawlers: dict[str, dict] = {}
     for agent, a in sorted(acc.items()):
-        seen = a.blocked + a.allowed + a.mixed
-        if seen == 0:
+        if a.blocked + a.allowed + a.mixed == 0:
             continue
         avg_delay = (
             round(a.crawl_delay_total / a.crawl_delay_count, 2)
             if a.crawl_delay_count > 0
             else None
         )
-        out[agent] = {
+        crawlers[agent] = {
             "block_rate": round(a.blocked / analyzed, 6),
             "blocked": a.blocked,
             "allowed": a.allowed,
             "mixed": a.mixed,
-            "wildcard_blocked": a.wildcard_blocked,
-            "wildcard_allowed": a.wildcard_allowed,
             **({"avg_crawl_delay": avg_delay} if avg_delay is not None else {}),
         }
-    return out
+    return {"meta": {**global_counts, "analyzed": analyzed}, "crawlers": crawlers}
 
 
 def percentages(acc: dict[str, Accumulator], analyzed: int) -> dict[str, float]:
@@ -407,7 +407,9 @@ def update_timeseries(
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Build crawler block stats from robots.txt.")
+    p = argparse.ArgumentParser(
+        description="Build crawler block stats from robots.txt."
+    )
     p.add_argument("--top-thousands", type=int, default=DEFAULT_TOP_K)
     p.add_argument("--max-workers", type=int, default=DEFAULT_WORKERS)
     p.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
@@ -422,14 +424,14 @@ def main() -> int:
     limit = max(1, args.top_thousands) * 1000
     domains = download_top_domains(limit)
 
-    mapping, crawler_acc, analyzed, _ = build_mapping(
+    mapping, crawler_acc, analyzed, global_counts = build_mapping(
         domains, args.max_workers, args.timeout
     )
     log(f"Writing {args.domain_output}...")
     write_json(args.domain_output, mapping)
 
-    crawler_stats = build_crawler_stats(crawler_acc, analyzed)
-    log(f"Writing {args.crawlers_output}: {len(crawler_stats):,} crawlers")
+    crawler_stats = build_crawler_stats(crawler_acc, analyzed, global_counts)
+    log(f"Writing {args.crawlers_output}: {len(crawler_stats['crawlers']):,} crawlers")
     write_json(args.crawlers_output, crawler_stats)
 
     existing = load_timeseries(args.timeseries_output)

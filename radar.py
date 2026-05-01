@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import argparse
-import concurrent.futures as cf
+import asyncio
 import io
 import json
 import os
@@ -13,10 +13,14 @@ import sys
 import time
 import zipfile
 
+import warnings
+
 import httpx
 
+warnings.filterwarnings("ignore", category=Warning)
+
 TRANCO_URL = "https://tranco-list.eu/top-1m.csv.zip"
-RELEASE_API = "https://api.github.com/repos/tn3w/robots-radar/releases/latest"
+RELEASE_LATEST = "https://github.com/tn3w/robots-radar/releases/latest/download"
 DOMAIN_FILE = "domain-crawler-blocks.json"
 TIMESERIES_FILE = "crawler-block-percentages.json"
 CRAWLERS_FILE = "crawler-stats.json"
@@ -26,32 +30,38 @@ DEFAULT_TIMEOUT = 3
 DEFAULT_WORKERS = 512
 DEFAULT_TOP_K = 100
 TRANCO_TIMEOUT = 60
+MAX_ROBOTS_BYTES = 512 * 1024
 DIRECTIVE_RE = re.compile(r"(?i)(user-agent|allow|disallow|crawl-delay|sitemap)\s*:")
 WHITESPACE_RE = re.compile(r"\s+")
-
-_client: httpx.Client | None = None
 
 
 def log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
 
 
-def client() -> httpx.Client:
-    global _client
-    if _client is None:
-        _client = httpx.Client(
-            http2=True,
-            follow_redirects=False,
-            limits=httpx.Limits(max_connections=1024, max_keepalive_connections=512),
-            headers={"User-Agent": USER_AGENT, "Accept-Encoding": "gzip, br"},
-        )
-    return _client
+def make_async_client(concurrency: int, timeout: int) -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        follow_redirects=False,
+        trust_env=False,
+        verify=False,
+        limits=httpx.Limits(
+            max_connections=concurrency,
+            max_keepalive_connections=concurrency // 2,
+        ),
+        timeout=httpx.Timeout(connect=2.0, read=timeout, write=timeout, pool=timeout),
+        headers={"User-Agent": USER_AGENT, "Accept-Encoding": "gzip, br"},
+    )
 
 
 def download_top_domains(limit: int) -> list[str]:
     log(f"Downloading Tranco top-1M, taking first {limit:,}...")
-    payload = client().get(TRANCO_URL, timeout=TRANCO_TIMEOUT, follow_redirects=True)
-    payload.raise_for_status()
+    with httpx.Client(
+        follow_redirects=True,
+        timeout=TRANCO_TIMEOUT,
+        headers={"User-Agent": USER_AGENT},
+    ) as cli:
+        payload = cli.get(TRANCO_URL)
+        payload.raise_for_status()
     domains: list[str] = []
     with zipfile.ZipFile(io.BytesIO(payload.content)) as zf:
         with zf.open(zf.namelist()[0]) as handle:
@@ -66,12 +76,19 @@ def download_top_domains(limit: int) -> list[str]:
     return domains
 
 
-def fetch_robots(domain: str, timeout: int) -> str | None:
+async def fetch_robots(client: httpx.AsyncClient, domain: str) -> str | None:
     try:
-        response = client().get(f"https://{domain}/robots.txt", timeout=timeout)
-        if response.status_code != 200:
-            return ""
-        return response.text
+        async with client.stream("GET", f"https://{domain}/robots.txt") as response:
+            if response.status_code != 200:
+                return ""
+            chunks: list[bytes] = []
+            total = 0
+            async for chunk in response.aiter_bytes():
+                chunks.append(chunk)
+                total += len(chunk)
+                if total >= MAX_ROBOTS_BYTES:
+                    break
+            return b"".join(chunks).decode("utf-8", errors="replace")
     except (httpx.HTTPError, OSError):
         return None
 
@@ -228,8 +245,8 @@ class Accumulator:
         self.crawl_delay_count += 1
 
 
-def build_mapping(
-    domains: list[str], workers: int, timeout: int
+async def build_mapping(
+    domains: list[str], concurrency: int, timeout: int
 ) -> tuple[
     dict[str, dict[str, list[str]]], dict[str, Accumulator], int, dict[str, int]
 ]:
@@ -251,13 +268,19 @@ def build_mapping(
     }
     total = len(domains)
     done = 0
-    log(f"Fetching robots.txt for {total:,} domains, {workers} workers...")
+    log(f"Fetching robots.txt for {total:,} domains, concurrency={concurrency}...")
 
-    with cf.ThreadPoolExecutor(max_workers=workers) as ex:
-        futures = {ex.submit(fetch_robots, d, timeout): d for d in domains}
-        for fut in cf.as_completed(futures):
-            domain = futures[fut]
-            text = fut.result()
+    sem = asyncio.Semaphore(concurrency)
+
+    async with make_async_client(concurrency, timeout) as cli:
+
+        async def worker(domain: str) -> tuple[str, str | None]:
+            async with sem:
+                return domain, await fetch_robots(cli, domain)
+
+        tasks = [asyncio.create_task(worker(d)) for d in domains]
+        for coro in asyncio.as_completed(tasks):
+            domain, text = await coro
             done += 1
             if done % 100 == 0 or done == total:
                 log(f"Robots: {done:,}/{total:,} {stats} saved={len(mapping):,}")
@@ -359,27 +382,16 @@ def normalize_timeseries(data: object) -> dict[str, dict[str, float]]:
 
 
 def fetch_release_asset(name: str) -> bytes | None:
-    token = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")
-    headers = {"Accept": "application/vnd.github+json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
     try:
-        release = client().get(
-            RELEASE_API, headers=headers, follow_redirects=True
-        ).json()
-    except (httpx.HTTPError, json.JSONDecodeError, OSError):
+        with httpx.Client(
+            follow_redirects=True, timeout=30, headers={"User-Agent": USER_AGENT}
+        ) as cli:
+            response = cli.get(f"{RELEASE_LATEST}/{name}")
+            if response.status_code != 200:
+                return None
+            return response.content
+    except (httpx.HTTPError, OSError):
         return None
-    for asset in release.get("assets", []):
-        if asset.get("name") != name:
-            continue
-        url = asset.get("browser_download_url")
-        if not url:
-            return None
-        try:
-            return client().get(url, headers=headers, follow_redirects=True).content
-        except (httpx.HTTPError, OSError):
-            return None
-    return None
 
 
 def load_timeseries(path: str) -> dict[str, dict[str, float]]:
@@ -425,8 +437,8 @@ def main() -> int:
     limit = max(1, args.top_thousands) * 1000
     domains = download_top_domains(limit)
 
-    mapping, crawler_acc, analyzed, global_counts = build_mapping(
-        domains, args.max_workers, args.timeout
+    mapping, crawler_acc, analyzed, global_counts = asyncio.run(
+        build_mapping(domains, args.max_workers, args.timeout)
     )
     log(f"Writing {args.domain_output}...")
     write_json(args.domain_output, mapping)

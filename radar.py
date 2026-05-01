@@ -49,7 +49,7 @@ def make_async_client(concurrency: int, timeout: int) -> httpx.AsyncClient:
             max_connections=concurrency,
             max_keepalive_connections=concurrency // 2,
         ),
-        timeout=httpx.Timeout(connect=5.0, read=timeout, write=timeout, pool=timeout),
+        timeout=httpx.Timeout(connect=10.0, read=timeout, write=timeout, pool=timeout),
         headers={"User-Agent": USER_AGENT, "Accept-Encoding": "gzip, br"},
     )
 
@@ -77,21 +77,30 @@ def download_top_domains(limit: int) -> list[str]:
     return domains
 
 
+async def fetch_url(client: httpx.AsyncClient, url: str) -> str | None:
+    async with client.stream("GET", url) as response:
+        if response.status_code != 200:
+            return ""
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in response.aiter_bytes():
+            chunks.append(chunk)
+            total += len(chunk)
+            if total >= MAX_ROBOTS_BYTES:
+                break
+        return b"".join(chunks).decode("utf-8", errors="replace")
+
+
 async def fetch_robots(client: httpx.AsyncClient, domain: str) -> str | None:
-    try:
-        async with client.stream("GET", f"https://{domain}/robots.txt") as response:
-            if response.status_code != 200:
-                return ""
-            chunks: list[bytes] = []
-            total = 0
-            async for chunk in response.aiter_bytes():
-                chunks.append(chunk)
-                total += len(chunk)
-                if total >= MAX_ROBOTS_BYTES:
-                    break
-            return b"".join(chunks).decode("utf-8", errors="replace")
-    except (httpx.HTTPError, OSError):
-        return None
+    for url in (f"https://{domain}/robots.txt", f"http://{domain}/robots.txt"):
+        for attempt in range(2):
+            try:
+                return await fetch_url(client, url)
+            except (httpx.HTTPError, OSError):
+                if attempt == 0:
+                    continue
+                break
+    return None
 
 
 def split_directives(line: str) -> list[tuple[str, str]]:

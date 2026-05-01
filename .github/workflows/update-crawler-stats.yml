@@ -23,7 +23,7 @@ jobs:
           python-version: '3.12'
           cache: pip
 
-      - run: pip install httpx aiodns
+      - run: pip install httpx
 
       - name: Build crawler stats
         env:

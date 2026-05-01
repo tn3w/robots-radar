@@ -15,7 +15,6 @@ import zipfile
 
 import warnings
 
-import aiodns
 import httpx
 
 warnings.filterwarnings("ignore", category=Warning)
@@ -75,46 +74,6 @@ def download_top_domains(limit: int) -> list[str]:
                     break
     log(f"Loaded {len(domains):,} domains.")
     return domains
-
-
-DNS_SERVERS = [
-    "1.1.1.1", "1.0.0.1",
-    "8.8.8.8", "8.8.4.4",
-    "9.9.9.9", "149.112.112.112",
-    "208.67.222.222", "208.67.220.220",
-]
-DNS_CONCURRENCY = 256
-
-
-async def resolve_domains(domains: list[str]) -> list[str]:
-    log(f"Pre-resolving DNS for {len(domains):,} domains...")
-    resolvers = [
-        aiodns.DNSResolver(nameservers=[ns], timeout=5.0, tries=2)
-        for ns in DNS_SERVERS
-    ]
-    sem = asyncio.Semaphore(DNS_CONCURRENCY)
-    alive: list[str] = []
-    done = 0
-    total = len(domains)
-
-    async def resolve(domain: str, idx: int) -> str | None:
-        async with sem:
-            try:
-                await resolvers[idx % len(resolvers)].gethostbyname(domain, 2)
-                return domain
-            except aiodns.error.DNSError:
-                return None
-
-    tasks = [asyncio.create_task(resolve(d, i)) for i, d in enumerate(domains)]
-    for coro in asyncio.as_completed(tasks):
-        result = await coro
-        done += 1
-        if done % 1000 == 0 or done == total:
-            log(f"DNS: {done:,}/{total:,} alive={len(alive):,}")
-        if result:
-            alive.append(result)
-    log(f"DNS resolved: {len(alive):,}/{total:,} alive.")
-    return alive
 
 
 async def fetch_robots(client: httpx.AsyncClient, domain: str) -> str | None:
@@ -299,7 +258,6 @@ async def build_mapping(
         "wildcard_allowed": 0,
     }
     stats = {
-        "dns_failed": 0,
         "fetch_failed": 0,
         "empty": 0,
         "no_directives": 0,
@@ -308,10 +266,7 @@ async def build_mapping(
         "no_usable": 0,
         "analyzed": 0,
     }
-    original_total = len(domains)
-    domains = await resolve_domains(domains)
     total = len(domains)
-    stats["dns_failed"] = original_total - total
     done = 0
     log(f"Fetching robots.txt for {total:,} domains, concurrency={concurrency}...")
 
@@ -362,7 +317,7 @@ async def build_mapping(
 
     log(f"Done robots: {stats} saved_domains={len(mapping):,}")
     global_counts.update(stats)
-    global_counts["total"] = original_total
+    global_counts["total"] = total
     return (
         dict(sorted(mapping.items())),
         crawler_acc,

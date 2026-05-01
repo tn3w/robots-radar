@@ -39,15 +39,18 @@ jobs:
           gh release create "$TAG" \
             domain-crawler-blocks.json \
             crawler-block-percentages.json \
+            crawler-stats.json \
             --title "Crawler Stats - $TS" \
             --notes "Automated update.
 
           - \`domain-crawler-blocks.json\`: per-domain crawler allow/block map
           - \`crawler-block-percentages.json\`: block-rate time series
+          - \`crawler-stats.json\`: per-crawler aggregated stats (block rate, counts, crawl-delay, wildcard coverage)
 
           \`\`\`bash
           wget https://github.com/tn3w/robots-radar/releases/download/$TAG/domain-crawler-blocks.json
           wget https://github.com/tn3w/robots-radar/releases/download/$TAG/crawler-block-percentages.json
+          wget https://github.com/tn3w/robots-radar/releases/download/$TAG/crawler-stats.json
           \`\`\`"
 
       - name: Prune old releases

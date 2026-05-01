@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import concurrent.futures as cf
 import io
 import json
 import os
@@ -48,7 +49,7 @@ def make_async_client(concurrency: int, timeout: int) -> httpx.AsyncClient:
             max_connections=concurrency,
             max_keepalive_connections=concurrency // 2,
         ),
-        timeout=httpx.Timeout(connect=2.0, read=timeout, write=timeout, pool=timeout),
+        timeout=httpx.Timeout(connect=5.0, read=timeout, write=timeout, pool=timeout),
         headers={"User-Agent": USER_AGENT, "Accept-Encoding": "gzip, br"},
     )
 
@@ -270,6 +271,8 @@ async def build_mapping(
     done = 0
     log(f"Fetching robots.txt for {total:,} domains, concurrency={concurrency}...")
 
+    loop = asyncio.get_running_loop()
+    loop.set_default_executor(cf.ThreadPoolExecutor(max_workers=concurrency))
     sem = asyncio.Semaphore(concurrency)
 
     async with make_async_client(concurrency, timeout) as cli:

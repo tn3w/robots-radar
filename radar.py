@@ -77,23 +77,35 @@ def download_top_domains(limit: int) -> list[str]:
     return domains
 
 
-async def resolve_domains(domains: list[str], concurrency: int) -> list[str]:
+DNS_SERVERS = [
+    "1.1.1.1", "1.0.0.1",
+    "8.8.8.8", "8.8.4.4",
+    "9.9.9.9", "149.112.112.112",
+    "208.67.222.222", "208.67.220.220",
+]
+DNS_CONCURRENCY = 256
+
+
+async def resolve_domains(domains: list[str]) -> list[str]:
     log(f"Pre-resolving DNS for {len(domains):,} domains...")
-    resolver = aiodns.DNSResolver(timeout=2.0, tries=1)
-    sem = asyncio.Semaphore(concurrency)
+    resolvers = [
+        aiodns.DNSResolver(nameservers=[ns], timeout=5.0, tries=2)
+        for ns in DNS_SERVERS
+    ]
+    sem = asyncio.Semaphore(DNS_CONCURRENCY)
     alive: list[str] = []
     done = 0
     total = len(domains)
 
-    async def resolve(domain: str) -> str | None:
+    async def resolve(domain: str, idx: int) -> str | None:
         async with sem:
             try:
-                await resolver.gethostbyname(domain, 2)
+                await resolvers[idx % len(resolvers)].gethostbyname(domain, 2)
                 return domain
             except aiodns.error.DNSError:
                 return None
 
-    tasks = [asyncio.create_task(resolve(d)) for d in domains]
+    tasks = [asyncio.create_task(resolve(d, i)) for i, d in enumerate(domains)]
     for coro in asyncio.as_completed(tasks):
         result = await coro
         done += 1
@@ -297,7 +309,7 @@ async def build_mapping(
         "analyzed": 0,
     }
     original_total = len(domains)
-    domains = await resolve_domains(domains, concurrency * 4)
+    domains = await resolve_domains(domains)
     total = len(domains)
     stats["dns_failed"] = original_total - total
     done = 0

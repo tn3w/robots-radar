@@ -1,1 +1,2 @@
+aiodns
 httpx
